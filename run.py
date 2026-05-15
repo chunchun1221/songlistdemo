@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""一键启动：启动 API → 登录（如需）→ 导入歌单"""
+"""一键启动：启动 API → 登录（Cookie 粘贴）→ 导入歌单"""
 
 import http.client
 import json
@@ -41,7 +41,6 @@ def start_api():
 
     if not os.path.exists(os.path.join(API_DIR, "app.js")):
         print("[-] 未找到 API 目录，请先 clone api-enhanced")
-        print("    git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git")
         return False
 
     if not os.path.exists(os.path.join(API_DIR, "node_modules")):
@@ -70,7 +69,6 @@ def start_api():
 
 
 def check_cookie_valid(content):
-    """验证 cookie 是否有效"""
     try:
         conn = http.client.HTTPConnection("localhost", API_PORT, timeout=15)
         conn.request(
@@ -82,62 +80,81 @@ def check_cookie_valid(content):
         data = json.loads(r.read().decode("utf-8"))
         conn.close()
         account = data.get("data", {}).get("account", {})
-        return account.get("id") is not None
+        if account.get("id"):
+            print("    登录用户:", account.get("userName", "?"))
+            return True
+        return False
     except Exception:
         return False
 
 
+def input_cookie():
+    print("\n" + "=" * 50)
+    print("登录 - 手动粘贴 Cookie")
+    print("=" * 50)
+    print()
+    print("操作步骤：")
+    print("  1. 浏览器打开 https://music.163.com 并登录")
+    print("  2. F12 → Application → Cookies → https://music.163.com")
+    print("  3. 点任意一条 cookie，按 Cmd+A / Ctrl+A 全选")
+    print("  4. 右键 → Copy → Copy as cURL (bash)")
+    print("  5. 找到 Cookie: 开头的那段粘贴进来")
+    print()
+
+    cookie_val = input("请粘贴 Cookie 内容: ").strip()
+
+    # 从 cURL 格式中提取 cookie 值
+    if cookie_val.startswith("Cookie:"):
+        cookie_val = cookie_val[len("Cookie:"):].strip()
+    elif "Cookie:" in cookie_val:
+        # 完整 cURL 命令格式
+        import re
+        m = re.search(r"-H\s+'Cookie:\s*([^']+)'", cookie_val)
+        if m:
+            cookie_val = m.group(1)
+        else:
+            m = re.search(r"Cookie:\s*([^\s]+)", cookie_val)
+            if m:
+                cookie_val = m.group(1)
+
+    cookie_val = cookie_val.strip("'\"")
+
+    if not cookie_val:
+        print("[-] Cookie 为空")
+        return False
+
+    # 验证
+    print("\n[*] 验证 Cookie...")
+    valid = check_cookie_valid(cookie_val)
+    if not valid:
+        print("[-] Cookie 无效，请确认已登录 music.163.com 后重试")
+        # 问是否还要保存
+        save = input("是否仍保存到文件？(y/N): ").strip().lower()
+        if save != "y":
+            return False
+
+    with open(COOKIE_FILE, "w") as f:
+        f.write(cookie_val)
+    os.chmod(COOKIE_FILE, 0o600)
+    print("[✓] Cookie 已保存")
+    return True
+
+
 def ensure_login():
+    # 如果已有有效 cookie，直接继续
     if os.path.exists(COOKIE_FILE):
         with open(COOKIE_FILE) as f:
             content = f.read().strip()
-        if content and not content.startswith("#") and not content.startswith("请将"):
+        if content and not content.startswith("#"):
+            print("[*] 检测登录状态...")
             if check_cookie_valid(content):
                 print("[✓] Cookie 有效，已登录")
                 return True
             else:
-                print("[!] Cookie 已过期或无效，请重新登录")
-        else:
-            print("[!] Cookie 为空")
+                print("[!] Cookie 已过期")
 
-    print()
-    print("请选择登录方式：")
-    print("  1) 扫码登录（需要真实终端）")
-    print("  2) 手动粘贴 Cookie（推荐）")
-    print()
-
-    choice = input("请选择 (1/2): ").strip()
-
-    if choice == "1":
-        print("\n[*] 启动扫码登录...")
-        result = subprocess.run([sys.executable, "login.py"], cwd=BASE_DIR)
-        if result.returncode != 0:
-            print("[-] 扫码登录失败")
-            return False
-        return True
-
-    elif choice == "2":
-        print("\n[*] 请从浏览器复制 Cookie：")
-        print("   1. 打开 https://music.163.com 并登录")
-        print("   2. F12 → Application → Cookies → 全选右键 Copy as cURL")
-        print("   3. 找到 -H 'Cookie: ...' 部分")
-        print()
-        cookie_val = input("请粘贴 Cookie 内容: ").strip()
-        if cookie_val.startswith("Cookie:"):
-            cookie_val = cookie_val[len("Cookie:"):].strip()
-        cookie_val = cookie_val.strip("'\"")
-        if not cookie_val:
-            print("[-] Cookie 为空")
-            return False
-        with open(COOKIE_FILE, "w") as f:
-            f.write(cookie_val)
-        os.chmod(COOKIE_FILE, 0o600)
-        print("[✓] Cookie 已保存")
-        return True
-
-    else:
-        print("[-] 无效选择")
-        return False
+    # 引导用户粘贴 cookie
+    return input_cookie()
 
 
 def run_import():
@@ -150,16 +167,14 @@ def run_import():
     if len(sys.argv) >= 2:
         playlist_name = sys.argv[1]
     else:
-        playlist_name = input("请输入歌单名称: ").strip()
-        if not playlist_name:
-            playlist_name = "我的歌单"
+        playlist_name = input("请输入歌单名称: ").strip() or "我的歌单"
 
     result = subprocess.run([sys.executable, import_script, playlist_name], cwd=BASE_DIR)
     return result.returncode == 0
 
 
 def warmup():
-    print("[*] 预热连接...")
+    print("[*] 预热连接（首次约 30-60s）...")
     try:
         conn = http.client.HTTPConnection("localhost", API_PORT, timeout=90)
         conn.request(
@@ -179,7 +194,7 @@ def main():
     warmup()
 
     if not ensure_login():
-        print("\n[!] 登录失败，请稍后重试")
+        print("\n[!] 登录失败")
         sys.exit(1)
 
     if not run_import():
