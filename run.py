@@ -284,7 +284,8 @@ def _parse_song(line):
     if m:
         return (m.group(1).strip(), m.group(2).strip())
 
-    return None
+    # 只有歌名，无歌手
+    return (line, "")
 
 
 def warmup():

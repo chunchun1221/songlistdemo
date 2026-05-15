@@ -55,6 +55,10 @@ def parse_song_line(line):
     if m:
         return (m.group(1).strip(), m.group(2).strip())
 
+    # 格式4: 只有歌名，没有歌手
+    if line and not line.startswith("#"):
+        return (line, "")
+
     return None
 
 
@@ -134,9 +138,17 @@ def api_post(path, params_dict, retries=3, timeout=90):
     return None
 
 
+AUTO_MATCH_NO_ARTIST = True  # 无歌手歌曲是否自动取搜索结果第一条
+
+
 def search_song(song_name, artist_name):
+    if artist_name:
+        keywords = "{} {}".format(song_name, artist_name)
+    else:
+        keywords = song_name
+
     params = {
-        "keywords": "{} {}".format(song_name, artist_name),
+        "keywords": keywords,
         "limit": "10",
         **COMMON_PARAMS,
     }
@@ -148,6 +160,14 @@ def search_song(song_name, artist_name):
     if not songs:
         return None
 
+    # 无歌手：取第一条
+    if not artist_name:
+        if AUTO_MATCH_NO_ARTIST:
+            return {"song": songs[0], "confidence": "no_artist"}
+        else:
+            return None
+
+    # 有歌手：匹配歌手名
     artist_lower = artist_name.lower()
     artist_normalized = artist_lower.replace("&", ",").replace(" and ", ",")
 
@@ -213,15 +233,28 @@ def main():
     print("[+] Cookie 已加载")
 
     songs = []
+    no_artist_count = 0
     with open(SONGS_FILE) as f:
         for line in f:
             result = parse_song_line(line)
             if result:
                 songs.append(result)
+                if not result[1]:
+                    no_artist_count += 1
             elif line.strip():
                 print(f"  [!] 无法解析: {line.strip()}")
 
     print(f"[*] 共读取 {len(songs)} 首歌曲")
+
+    global AUTO_MATCH_NO_ARTIST
+    if no_artist_count > 0:
+        print(f"\n[!] 有 {no_artist_count} 首歌曲未指定歌手")
+        choice = input("自动取搜索结果第一条？(Y/n): ").strip().lower()
+        if choice == "n":
+            AUTO_MATCH_NO_ARTIST = False
+            print("  已跳过，这些歌不会被导入")
+        else:
+            print("  将自动取搜索第一条结果")
 
     warmup()
 
@@ -235,7 +268,8 @@ def main():
         print(f"  [{idx}/{len(songs)}] {song_name} - {artist_name}")
         result = search_song(song_name, artist_name)
         if result is None:
-            unmatched.append(f"{song_name} - {artist_name}")
+            label = artist_name or song_name
+            unmatched.append(f"{label}")
             print(f"    -> 未找到")
         else:
             s = result["song"]
@@ -244,8 +278,14 @@ def main():
             sar = ", ".join(ar.get("name", "") for ar in s.get("ar", []))
             matched_ids.append(sid)
             success.append(f"{sname} - {sar} - {sid}")
-            if result["confidence"] == "high":
+            conf = result["confidence"]
+            if conf == "high":
                 print(f"    -> ✓ {sname} - {sar}")
+            elif conf == "no_artist":
+                low_confidence.append(
+                    f"{song_name} (未指定歌手) -> 自动匹配: {sname} - {sar} - {sid}"
+                )
+                print(f"    -> ? {sname} - {sar} (自动匹配)")
             else:
                 low_confidence.append(
                     f"{song_name} - {artist_name} -> 匹配: {sname} - {sar} - {sid}"
