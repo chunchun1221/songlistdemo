@@ -176,24 +176,19 @@ def ensure_login():
         return input_cookie()
 
 
-def run_import():
+def run_import(playlist_name):
     print()
     import_script = os.path.join(BASE_DIR, "import_playlist.py")
     if not os.path.exists(import_script):
         print("[-] 未找到 import_playlist.py")
         return False
 
-    if len(sys.argv) >= 2:
-        playlist_name = sys.argv[1]
-    else:
-        playlist_name = input("请输入歌单名称: ").strip() or "我的歌单"
-
     result = subprocess.run([sys.executable, import_script, playlist_name], cwd=BASE_DIR)
     return result.returncode == 0
 
 
 def get_songs():
-    """获取歌曲清单"""
+    """获取歌曲清单，返回歌单名"""
     songs_file = os.path.join(BASE_DIR, "songs.txt")
     has_file = os.path.exists(songs_file)
 
@@ -209,7 +204,9 @@ def get_songs():
         print("  检测到 songs.txt（{} 首）".format(count))
         use_file = input("\n直接使用此文件？(Y/n): ").strip().lower()
         if use_file != "n":
-            return True
+            default_name = sys.argv[1] if len(sys.argv) >= 2 else "我的歌单"
+            name = input("请输入歌单名称（默认: {}）: ".format(default_name)).strip()
+            return name or default_name
 
     print("请粘贴歌曲清单（每行格式：歌名 - 歌手）")
     print("粘贴完成后，按 Ctrl+D（Mac）/ Ctrl+Z（Windows）结束")
@@ -252,7 +249,14 @@ def get_songs():
         f.write("\n".join(normalized) + "\n")
 
     print("[+] 已保存 {} 首歌曲到 songs.txt".format(len(normalized)))
-    return True
+
+    # 询问歌单名称
+    print()
+    default_name = sys.argv[1] if len(sys.argv) >= 2 else "我的歌单"
+    name = input("请输入歌单名称（默认: {}）: ".format(default_name)).strip()
+    if not name:
+        name = default_name
+    return name
 
 
 def _parse_song(line):
@@ -307,11 +311,12 @@ def main():
         print("\n[!] 登录失败")
         sys.exit(1)
 
-    if not get_songs():
+    playlist_name = get_songs()
+    if not playlist_name:
         print("\n[!] 歌曲清单为空")
         sys.exit(1)
 
-    if not run_import():
+    if not run_import(playlist_name):
         print("\n[!] 导入失败")
         sys.exit(1)
 
