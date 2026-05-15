@@ -95,7 +95,7 @@ def main():
     for i in range(60):
         resp = api_get(
             "/login/qr/check",
-            "key={}&realIP={}".format(key, REAL_IP),
+            "key={}&realIP={}&domain=https://music.163.com".format(key, REAL_IP),
             retries=3,
         )
         if resp is None:
