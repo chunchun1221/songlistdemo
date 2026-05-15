@@ -18,10 +18,10 @@ songlistdemo/
 ## 前置条件
 
 - Node.js 18+
-- Python 3 + requests 库
+- Python 3
 
 ```bash
-pip3 install requests qrcode
+pip3 install qrcode
 ```
 
 ## 快速开始

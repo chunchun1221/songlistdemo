@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """一键启动：启动 API → 登录（如需）→ 导入歌单"""
 
+import http.client
+import json
 import os
 import subprocess
 import sys
@@ -13,28 +15,20 @@ API_PORT = 3000
 
 
 def is_api_running():
-    """检查 API 是否已在运行"""
     import socket
-    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-    s.settimeout(2)
-    try:
-        s.connect(("::1", API_PORT))
-        s.close()
-        return True
-    except (ConnectionRefusedError, OSError):
-        pass
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2)
-        s.connect(("127.0.0.1", API_PORT))
-        s.close()
-        return True
-    except (ConnectionRefusedError, OSError):
-        return False
+    for host in ("::1", "127.0.0.1"):
+        try:
+            s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect((host, API_PORT))
+            s.close()
+            return True
+        except (ConnectionRefusedError, OSError):
+            pass
+    return False
 
 
 def start_api():
-    """启动 API 服务"""
     print("=" * 50)
     print("网易云音乐歌单导入工具")
     print("=" * 50)
@@ -50,20 +44,14 @@ def start_api():
         print("    git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git")
         return False
 
-    # 检查 node_modules
     if not os.path.exists(os.path.join(API_DIR, "node_modules")):
         print("[*] 安装依赖...")
-        subprocess.run(
-            ["npm", "install"],
-            cwd=API_DIR,
-            capture_output=True,
-        )
+        subprocess.run(["npm", "install"], cwd=API_DIR, capture_output=True)
 
-    # 启动
     log_file = open(os.path.join(BASE_DIR, "api.log"), "w")
     env = os.environ.copy()
     env["ENABLE_GENERAL_UNBLOCK"] = "false"
-    proc = subprocess.Popen(
+    subprocess.Popen(
         ["node", "app.js"],
         cwd=API_DIR,
         env=env,
@@ -71,8 +59,7 @@ def start_api():
         stderr=subprocess.STDOUT,
     )
 
-    # 等待启动
-    for i in range(30):
+    for _ in range(30):
         if is_api_running():
             print("[✓] API 服务启动成功")
             return True
@@ -82,32 +69,34 @@ def start_api():
     return False
 
 
+def check_cookie_valid(content):
+    """验证 cookie 是否有效"""
+    try:
+        conn = http.client.HTTPConnection("localhost", API_PORT, timeout=15)
+        conn.request(
+            "GET",
+            "/login/status?realIP=183.2.175.120&domain=https://music.163.com",
+            headers={"Cookie": content},
+        )
+        r = conn.getresponse()
+        data = json.loads(r.read().decode("utf-8"))
+        conn.close()
+        account = data.get("data", {}).get("account", {})
+        return account.get("id") is not None
+    except Exception:
+        return False
+
+
 def ensure_login():
-    """检查 cookie，无则执行登录"""
     if os.path.exists(COOKIE_FILE):
         with open(COOKIE_FILE) as f:
             content = f.read().strip()
         if content and not content.startswith("#") and not content.startswith("请将"):
-            # 简单验证是否有效
-            try:
-                import requests
-                r = requests.get(
-                    "http://localhost:3000/login/status",
-                    params={
-                        "realIP": "183.2.175.120",
-                        "domain": "https://music.163.com",
-                    },
-                    headers={"Cookie": content},
-                    timeout=15,
-                )
-                data = r.json()
-                account = data.get("data", {}).get("account", {})
-                if account.get("id"):
-                    print("[✓] Cookie 有效，已登录")
-                    return True
-            except Exception:
-                pass
-            print("[!] Cookie 已过期或无效，请重新登录")
+            if check_cookie_valid(content):
+                print("[✓] Cookie 有效，已登录")
+                return True
+            else:
+                print("[!] Cookie 已过期或无效，请重新登录")
         else:
             print("[!] Cookie 为空")
 
@@ -121,10 +110,7 @@ def ensure_login():
 
     if choice == "1":
         print("\n[*] 启动扫码登录...")
-        result = subprocess.run(
-            [sys.executable, "login.py"],
-            cwd=BASE_DIR,
-        )
+        result = subprocess.run([sys.executable, "login.py"], cwd=BASE_DIR)
         if result.returncode != 0:
             print("[-] 扫码登录失败")
             return False
@@ -139,7 +125,6 @@ def ensure_login():
         cookie_val = input("请粘贴 Cookie 内容: ").strip()
         if cookie_val.startswith("Cookie:"):
             cookie_val = cookie_val[len("Cookie:"):].strip()
-        # 去掉首尾引号
         cookie_val = cookie_val.strip("'\"")
         if not cookie_val:
             print("[-] Cookie 为空")
@@ -156,14 +141,12 @@ def ensure_login():
 
 
 def run_import():
-    """运行导入脚本"""
     print()
     import_script = os.path.join(BASE_DIR, "import_playlist.py")
     if not os.path.exists(import_script):
         print("[-] 未找到 import_playlist.py")
         return False
 
-    # 让用户输入歌单名（或从命令行参数获取）
     if len(sys.argv) >= 2:
         playlist_name = sys.argv[1]
     else:
@@ -171,28 +154,29 @@ def run_import():
         if not playlist_name:
             playlist_name = "我的歌单"
 
-    result = subprocess.run(
-        [sys.executable, import_script, playlist_name],
-        cwd=BASE_DIR,
-    )
+    result = subprocess.run([sys.executable, import_script, playlist_name], cwd=BASE_DIR)
     return result.returncode == 0
+
+
+def warmup():
+    print("[*] 预热连接...")
+    try:
+        conn = http.client.HTTPConnection("localhost", API_PORT, timeout=90)
+        conn.request(
+            "GET",
+            "/search?keywords=warmup&realIP=183.2.175.120&domain=https://music.163.com",
+        )
+        conn.getresponse().read()
+        conn.close()
+    except Exception:
+        pass
 
 
 def main():
     if not start_api():
         sys.exit(1)
 
-    # 给 API 一点预热时间
-    print("[*] 预热连接...")
-    try:
-        import requests
-        requests.get(
-            "http://localhost:3000/search?keywords=warmup"
-            "&realIP=183.2.175.120&domain=https://music.163.com",
-            timeout=90,
-        )
-    except Exception:
-        pass
+    warmup()
 
     if not ensure_login():
         print("\n[!] 登录失败，请稍后重试")
