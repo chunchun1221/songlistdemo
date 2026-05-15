@@ -49,17 +49,27 @@ python3 run.py "我的歌单"
 
 首次运行需登录，后续只需执行 `python3 run.py "歌单名"` 即可。
 
-## 登录方式（手动粘贴 Cookie）
+## 登录方式
 
-首次运行时会提示你粘贴 Cookie，操作步骤：
+首次运行会提示选择登录方式：
+
+#### 方式 ① 扫码登录
+
+选择 `1`，终端显示二维码，用网易云音乐 App 扫码并确认即可。
+
+#### 方式 ② 粘贴 Cookie
+
+选择 `2`，按提示操作：
 
 1. 浏览器打开 https://music.163.com 并**保持登录状态**
 2. 按 `F12` → **Application** 标签 → **Cookies** → `https://music.163.com`
 3. 点任意一条 cookie，按 `Cmd+A` / `Ctrl+A` 全选
 4. **右键** → **Copy** → **Copy as cURL (bash)**
-5. 在终端粘贴，脚本会自动从 cURL 命令中提取 Cookie 并验证
+5. 在终端粘贴，脚本会自动提取 Cookie 并验证
 
-> 注意：`MUSIC_U` 是 HttpOnly 的，不能用 `document.cookie` 获取，务必用右键 cURL 方式复制。
+> `MUSIC_U` 是 HttpOnly 的，不能用 `document.cookie` 获取，务必用 cURL 方式复制。
+
+两种方式都会把 Cookie 保存到 `.cookie` 文件，后续运行 `run.py` 会自动检测。
 
 
 ## 匹配规则

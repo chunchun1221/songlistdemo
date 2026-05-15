@@ -26,13 +26,9 @@ def api_get(path, params_str="", retries=10):
             r = conn.getresponse()
             data = json.loads(r.read().decode("utf-8"))
             conn.close()
-            if data.get("code") == 200:
-                return data
-            if data.get("code") == 800:
-                return data
-            if data.get("code") == 802:
-                return data
-            if data.get("code") == 803:
+            code = data.get("code")
+            # 801 = 等待扫码（正常状态，不是错误）
+            if code in (200, 800, 801, 802, 803):
                 return data
             # 502 或其他错误 => 重试
         except Exception:
@@ -95,27 +91,41 @@ def main():
     print("[*] 二维码有效期约 3 分钟\n")
 
     # 4. 轮询
+    scanned = False
     for i in range(60):
         resp = api_get(
             "/login/qr/check",
             "key={}&realIP={}".format(key, REAL_IP),
-            retries=5,
+            retries=3,
         )
+        if resp is None:
+            continue
         code = resp.get("code", -1)
         if code == 800:
             print("\n[!] 二维码已过期，请重新运行")
             sys.exit(1)
-        if code == 803:
+        if code == 801:
+            # 等待扫码
+            msg = "等待扫码"
+        elif code == 802:
+            # 已扫码，等待确认
+            if not scanned:
+                print("\n[✓] 已扫码，请在手机上确认登录")
+                scanned = True
+            msg = "等待确认"
+        elif code == 803:
             cookie_str = resp.get("cookie", "")
             if not cookie_str:
-                print(f"\n[-] 扫码成功但 cookie 为空", file=sys.stderr)
+                print(f"\n[-] 登录成功但 cookie 为空", file=sys.stderr)
                 sys.exit(1)
             with open(COOKIE_FILE, "w") as f:
                 f.write(cookie_str)
             os.chmod(COOKIE_FILE, 0o600)
-            print(f"\n[+] 登录成功！Cookie 已保存")
+            print(f"\n[+] 登录成功！Cookie 已保存到 .cookie")
             return
-        sys.stdout.write(f"\r[*] 等待扫码{'.' * ((i + 1) % 4):<4}")
+        else:
+            msg = "等待中"
+        sys.stdout.write(f"\r[*] {msg}{'.' * ((i + 1) % 4):<4}")
         sys.stdout.flush()
         time.sleep(3)
 

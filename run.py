@@ -88,6 +88,16 @@ def check_cookie_valid(content):
         return False
 
 
+def login_qr():
+    """扫码登录"""
+    print("\n[*] 启动扫码登录...")
+    result = subprocess.run([sys.executable, "login.py"], cwd=BASE_DIR)
+    if result.returncode != 0:
+        print("[-] 扫码登录失败")
+        return False
+    return True
+
+
 def input_cookie():
     print("\n" + "=" * 50)
     print("登录 - 手动粘贴 Cookie")
@@ -107,7 +117,6 @@ def input_cookie():
     if cookie_val.startswith("Cookie:"):
         cookie_val = cookie_val[len("Cookie:"):].strip()
     elif "Cookie:" in cookie_val:
-        # 完整 cURL 命令格式
         import re
         m = re.search(r"-H\s+'Cookie:\s*([^']+)'", cookie_val)
         if m:
@@ -123,12 +132,10 @@ def input_cookie():
         print("[-] Cookie 为空")
         return False
 
-    # 验证
     print("\n[*] 验证 Cookie...")
     valid = check_cookie_valid(cookie_val)
     if not valid:
         print("[-] Cookie 无效，请确认已登录 music.163.com 后重试")
-        # 问是否还要保存
         save = input("是否仍保存到文件？(y/N): ").strip().lower()
         if save != "y":
             return False
@@ -153,8 +160,19 @@ def ensure_login():
             else:
                 print("[!] Cookie 已过期")
 
-    # 引导用户粘贴 cookie
-    return input_cookie()
+    # 让用户选择登录方式
+    print()
+    print("请选择登录方式：")
+    print("  1) 扫码登录（用网易云 App 扫码）")
+    print("  2) 粘贴 Cookie（从浏览器导出）")
+    print()
+
+    choice = input("请选择 (1/2): ").strip()
+
+    if choice == "1":
+        return login_qr()
+    else:
+        return input_cookie()
 
 
 def run_import():
