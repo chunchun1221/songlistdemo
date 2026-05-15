@@ -137,10 +137,20 @@ def main():
                 scanned = True
             msg = "等待确认"
         elif code == 803:
-            cookie_str = resp.get("cookie", "")
-            if not cookie_str:
+            raw_cookie = resp.get("cookie", "")
+            if not raw_cookie:
                 print("\n[-] 登录成功但 cookie 为空")
                 sys.exit(1)
+            # 过滤掉 Set-Cookie 属性（Max-Age, Expires, Path, Domain, Secure, HttpOnly）
+            clean_pairs = []
+            for part in raw_cookie.split(";"):
+                part = part.strip()
+                if "=" in part and part.split("=", 1)[0].strip() not in (
+                    "Max-Age", "Expires", "Path", "Domain",
+                    "Secure", "HttpOnly", "SameSite", "Comment",
+                ):
+                    clean_pairs.append(part)
+            cookie_str = "; ".join(clean_pairs)
             with open(COOKIE_FILE, "w") as f:
                 f.write(cookie_str)
             os.chmod(COOKIE_FILE, 0o600)
