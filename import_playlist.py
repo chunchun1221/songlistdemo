@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 API_HOST = "localhost"
 API_PORT = 3000
@@ -19,7 +20,10 @@ SUCCESS_FILE = os.path.join(BASE_DIR, "success.txt")
 LOW_CONF_FILE = os.path.join(BASE_DIR, "low_confidence.txt")
 UNMATCHED_FILE = os.path.join(BASE_DIR, "unmatched.txt")
 
-COMMON_PARAMS = "realIP=183.2.175.120&domain=https://music.163.com"
+COMMON_PARAMS = {
+    "realIP": "183.2.175.120",
+    "domain": "https://music.163.com",
+}
 
 COOKIE_CACHE = ""
 
@@ -38,11 +42,10 @@ def load_cookie():
     return content
 
 
-def api_get(path, params="", retries=3, timeout=90):
-    """使用 http.client 发 GET 请求"""
+def api_get(path, params_dict=None, retries=3, timeout=90):
     url = path
-    if params:
-        url = path + "?" + params
+    if params_dict:
+        url = path + "?" + urllib.parse.urlencode(params_dict)
 
     cookie = load_cookie()
 
@@ -64,7 +67,6 @@ def api_get(path, params="", retries=3, timeout=90):
             if "需要登录" in msg:
                 print(f"  [!] 需要登录，跳过")
                 return None
-            # 其他 code（如 502）=> 重试
         except Exception:
             pass
         if attempt < retries - 1:
@@ -72,9 +74,10 @@ def api_get(path, params="", retries=3, timeout=90):
     return None
 
 
-def api_post(path, data, retries=3, timeout=90):
-    """使用 http.client 发 POST 请求"""
-    params = data + "&" + COMMON_PARAMS
+def api_post(path, params_dict, retries=3, timeout=90):
+    """POST 请求，params_dict 自动 URL 编码"""
+    params_dict = {**params_dict, **COMMON_PARAMS}
+    body = urllib.parse.urlencode(params_dict)
     cookie = load_cookie()
 
     for attempt in range(retries):
@@ -83,7 +86,7 @@ def api_post(path, data, retries=3, timeout=90):
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
             if cookie:
                 headers["Cookie"] = cookie
-            conn.request("POST", path, body=params, headers=headers)
+            conn.request("POST", path, body=body, headers=headers)
             r = conn.getresponse()
             resp = json.loads(r.read().decode("utf-8"))
             conn.close()
@@ -102,8 +105,11 @@ def api_post(path, data, retries=3, timeout=90):
 
 
 def search_song(song_name, artist_name):
-    """搜索单曲，返回匹配结果"""
-    params = "keywords={} {}&{}&limit=10".format(song_name, artist_name, COMMON_PARAMS)
+    params = {
+        "keywords": "{} {}".format(song_name, artist_name),
+        "limit": "10",
+        **COMMON_PARAMS,
+    }
     resp = api_get("/cloudsearch", params)
     if not resp:
         return None
@@ -113,40 +119,35 @@ def search_song(song_name, artist_name):
         return None
 
     artist_lower = artist_name.lower()
-    # 替换 & 为 , 再比较
     artist_normalized = artist_lower.replace("&", ",").replace(" and ", ",")
 
     for s in songs:
         ar_names = [ar.get("name", "") for ar in s.get("ar", [])]
         ar_lower = "".join(n.lower() for n in ar_names)
-        # 检查歌手名是否匹配（支持 & 和 , 等价）
         if artist_normalized.replace(",", "") in ar_lower.replace(",", ""):
             return {"song": s, "confidence": "high"}
         for n in ar_lower:
             if artist_normalized in n or n in artist_normalized:
                 return {"song": s, "confidence": "high"}
 
-    first = songs[0]
-    return {"song": first, "confidence": "low"}
+    return {"song": songs[0], "confidence": "low"}
 
 
 def create_playlist(name):
-    """创建歌单，返回 playlist_id"""
-    resp = api_post("/playlist/create", "name={}&{}".format(name, COMMON_PARAMS))
+    resp = api_post("/playlist/create", {"name": name})
     if not resp:
         return None
     return resp.get("playlist", {}).get("id")
 
 
 def add_tracks(playlist_id, song_ids):
-    """批量添加歌曲到歌单"""
     all_ids = list(song_ids)
     for i in range(0, len(all_ids), 100):
         batch = all_ids[i : i + 100]
         ids_str = ",".join(str(sid) for sid in batch)
         resp = api_post(
             "/playlist/tracks",
-            "op=add&pid={}&tracks={}&{}".format(playlist_id, ids_str, COMMON_PARAMS),
+            {"op": "add", "pid": str(playlist_id), "tracks": ids_str},
         )
         if not resp:
             return False
@@ -156,7 +157,7 @@ def add_tracks(playlist_id, song_ids):
 def warmup():
     print("[*] 预热连接...")
     start = time.time()
-    api_get("/cloudsearch", "keywords=warmup&{}".format(COMMON_PARAMS), timeout=60)
+    api_get("/cloudsearch", {"keywords": "warmup", **COMMON_PARAMS}, timeout=60)
     elapsed = time.time() - start
     if elapsed > 2:
         print(f"   (耗时 {elapsed:.0f}s)")
@@ -181,7 +182,6 @@ def main():
         sys.exit(1)
     print("[+] Cookie 已加载")
 
-    # 读取歌曲
     songs = []
     with open(SONGS_FILE) as f:
         for line in f:
@@ -198,7 +198,6 @@ def main():
 
     warmup()
 
-    # 搜索匹配
     print("\n[*] 开始搜索匹配歌曲...")
     matched_ids = []
     low_confidence = []
@@ -227,7 +226,6 @@ def main():
                 print(f"    -> ? {sname} - {sar} (歌手不匹配)")
         time.sleep(0.5)
 
-    # 创建歌单
     print(f"\n[*] 创建歌单「{playlist_name}」...")
     playlist_id = create_playlist(playlist_name)
     if not playlist_id:
@@ -235,7 +233,6 @@ def main():
         sys.exit(1)
     print(f"[+] 歌单创建成功: {playlist_id}")
 
-    # 添加歌曲
     print(f"[*] 添加 {len(matched_ids)} 首歌曲到歌单...")
     ok = add_tracks(playlist_id, matched_ids)
     if ok:
@@ -243,7 +240,6 @@ def main():
     else:
         print("[!] 部分歌曲添加可能失败")
 
-    # 写报告
     with open(SUCCESS_FILE, "w") as f:
         f.write("\n".join(success) + "\n")
     with open(LOW_CONF_FILE, "w") as f:
