@@ -28,6 +28,36 @@ COMMON_PARAMS = {
 COOKIE_CACHE = ""
 
 
+def parse_song_line(line):
+    """解析歌曲行，支持多种格式，返回 (歌名, 歌手) 或 None"""
+    line = line.strip()
+    if not line:
+        return None
+
+    # 去掉开头的装饰符号
+    line = line.lstrip("·•●○◆◇※☆★♪♫♬▷▶ ")
+
+    # 格式1: 歌手《歌名》 —— 最优先，因为《》很明确
+    m = re.search(r"《([^》]+)》\s*(?:[-—–]+)?\s*$", line)
+    if m:
+        song = m.group(1).strip()
+        artist = line[: m.start()].strip().rstrip("·•●○◆◇※☆★♪♫♬▷▶ ")
+        if artist:
+            return (song, artist)
+
+    # 格式2: 歌名 - 歌手（或 歌名-歌手、歌名 — 歌手 等）
+    m = re.match(r"^(.+?)\s*[-—–]\s*(.+)$", line)
+    if m:
+        return (m.group(1).strip(), m.group(2).strip())
+
+    # 格式3: 歌名 歌手（用多个空格分隔）
+    m = re.match(r"^(.+?)\s{3,}(.+)$", line)
+    if m:
+        return (m.group(1).strip(), m.group(2).strip())
+
+    return None
+
+
 def load_cookie():
     global COOKIE_CACHE
     if COOKIE_CACHE:
@@ -185,14 +215,11 @@ def main():
     songs = []
     with open(SONGS_FILE) as f:
         for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"^(.+?)\s*-\s*(.+)$", line)
-            if m:
-                songs.append((m.group(1).strip(), m.group(2).strip()))
-            else:
-                print(f"  [!] 跳过无法解析的行: {line}")
+            result = parse_song_line(line)
+            if result:
+                songs.append(result)
+            elif line.strip():
+                print(f"  [!] 无法解析: {line.strip()}")
 
     print(f"[*] 共读取 {len(songs)} 首歌曲")
 

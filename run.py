@@ -4,6 +4,7 @@
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -234,13 +235,52 @@ def get_songs():
         with open(filepath) as f:
             content = f.read().strip()
 
-    # 保存到 songs.txt
-    with open(songs_file, "w") as f:
-        f.write(content + "\n")
+    # 保存并标准化格式
+    normalized = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # 标准化：尝试解析各种格式，统一输出 "歌名 - 歌手"
+        parsed = _parse_song(line)
+        if parsed:
+            normalized.append("{} - {}".format(parsed[0], parsed[1]))
+        else:
+            normalized.append(line)
 
-    count = len([l for l in content.split("\n") if l.strip()])
-    print("[+] 已保存 {} 首歌曲到 songs.txt".format(count))
+    with open(songs_file, "w") as f:
+        f.write("\n".join(normalized) + "\n")
+
+    print("[+] 已保存 {} 首歌曲到 songs.txt".format(len(normalized)))
     return True
+
+
+def _parse_song(line):
+    """解析单行歌曲，返回 (歌名, 歌手) 或 None"""
+    line = line.strip()
+    if not line:
+        return None
+    line = line.lstrip("·•●○◆◇※☆★♪♫♬▷▶ ")
+
+    # 歌手《歌名》
+    m = re.search(r"《([^》]+)》\s*(?:[-—–]+)?\s*$", line)
+    if m:
+        song = m.group(1).strip()
+        artist = line[: m.start()].strip().rstrip("·•●○◆◇※☆★♪♫♬▷▶ ")
+        if artist:
+            return (song, artist)
+
+    # 歌名 - 歌手
+    m = re.match(r"^(.+?)\s*[-—–]\s*(.+)$", line)
+    if m:
+        return (m.group(1).strip(), m.group(2).strip())
+
+    # 歌名  歌手（多空格）
+    m = re.match(r"^(.+?)\s{3,}(.+)$", line)
+    if m:
+        return (m.group(1).strip(), m.group(2).strip())
+
+    return None
 
 
 def warmup():
