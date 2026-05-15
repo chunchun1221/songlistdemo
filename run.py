@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_DIR = os.path.join(BASE_DIR, "NeteaseCloudMusicApi")
@@ -70,23 +71,31 @@ def start_api():
 
 
 def check_cookie_valid(content):
-    try:
-        conn = http.client.HTTPConnection("localhost", API_PORT, timeout=15)
-        conn.request(
-            "GET",
-            "/login/status?realIP=183.2.175.120&domain=https://music.163.com",
-            headers={"Cookie": content},
-        )
-        r = conn.getresponse()
-        data = json.loads(r.read().decode("utf-8"))
-        conn.close()
-        account = data.get("data", {}).get("account", {})
-        if account.get("id"):
-            print("    登录用户:", account.get("userName", "?"))
-            return True
-        return False
-    except Exception:
-        return False
+    params = urllib.parse.urlencode({"realIP": "183.2.175.120", "domain": "https://music.163.com"})
+    last_err = ""
+    for attempt in range(3):
+        try:
+            conn = http.client.HTTPConnection("localhost", API_PORT, timeout=30)
+            conn.request(
+                "GET",
+                "/login/status?" + params,
+                headers={"Cookie": content},
+            )
+            r = conn.getresponse()
+            data = json.loads(r.read().decode("utf-8"))
+            conn.close()
+            account = (data.get("data") or {}).get("account") or {}
+            if account.get("id"):
+                print("    登录用户:", account.get("userName", "?"))
+                return True
+            last_err = str(data)[:300]
+            return False
+        except Exception as e:
+            last_err = str(e)
+            if attempt < 2:
+                time.sleep(3)
+    print(f"    [!] 验证失败原因: {last_err}")
+    return False
 
 
 def login_qr():
@@ -158,10 +167,22 @@ def ensure_login():
             if check_cookie_valid(content):
                 print("[✓] Cookie 有效，已登录")
                 return True
+            print("[!] Cookie 验证失败（可能已过期，也可能是网络波动）")
+            print()
+            print("请选择：")
+            print("  1) 直接使用已有 Cookie 继续（跳过验证）")
+            print("  2) 重新扫码登录")
+            print("  3) 粘贴新 Cookie")
+            print()
+            choice = input("请选择 (1/2/3，默认1): ").strip() or "1"
+            if choice == "1":
+                return True
+            elif choice == "2":
+                return login_qr()
             else:
-                print("[!] Cookie 已过期")
+                return input_cookie()
 
-    # 让用户选择登录方式
+    # 没有 cookie 文件，让用户选择登录方式
     print()
     print("请选择登录方式：")
     print("  1) 扫码登录（用网易云 App 扫码）")
@@ -176,19 +197,29 @@ def ensure_login():
         return input_cookie()
 
 
-def run_import(playlist_name):
+def run_import():
     print()
     import_script = os.path.join(BASE_DIR, "import_playlist.py")
     if not os.path.exists(import_script):
         print("[-] 未找到 import_playlist.py")
         return False
 
-    result = subprocess.run([sys.executable, import_script, playlist_name], cwd=BASE_DIR)
+    result = subprocess.run([sys.executable, import_script], cwd=BASE_DIR)
+
+    if result.returncode == 2:
+        print("\n[!] 登录已过期，请重新登录")
+        if os.path.exists(COOKIE_FILE):
+            os.remove(COOKIE_FILE)
+        if not ensure_login():
+            return False
+        print("\n[*] 重新登录成功，继续导入...")
+        result = subprocess.run([sys.executable, import_script], cwd=BASE_DIR)
+
     return result.returncode == 0
 
 
 def get_songs():
-    """获取歌曲清单，返回歌单名"""
+    """准备歌曲清单，写入 songs.txt，返回 True/False"""
     songs_file = os.path.join(BASE_DIR, "songs.txt")
     has_file = os.path.exists(songs_file)
 
@@ -204,9 +235,7 @@ def get_songs():
         print("  检测到 songs.txt（{} 首）".format(count))
         use_file = input("\n直接使用此文件？(Y/n): ").strip().lower()
         if use_file != "n":
-            default_name = sys.argv[1] if len(sys.argv) >= 2 else "我的歌单"
-            name = input("请输入歌单名称（默认: {}）: ".format(default_name)).strip()
-            return name or default_name
+            return True
 
     print("请粘贴歌曲清单（每行格式：歌名 - 歌手）")
     print("粘贴完成后，按 Ctrl+D（Mac）/ Ctrl+Z（Windows）结束")
@@ -221,7 +250,7 @@ def get_songs():
     except EOFError:
         pass
 
-    content = "\n".join(lines).strip()
+    content = _fix_surrogates("\n".join(lines).strip())
     if not content:
         print("[-] 未输入任何歌曲")
         return False
@@ -238,54 +267,52 @@ def get_songs():
         line = line.strip()
         if not line:
             continue
-        # 标准化：尝试解析各种格式，统一输出 "歌名 - 歌手"
-        parsed = _parse_song(line)
-        if parsed:
-            normalized.append("{} - {}".format(parsed[0], parsed[1]))
-        else:
-            normalized.append(line)
+        for song, artist in _parse_songs(line):
+            normalized.append("{} - {}".format(song, artist))
 
     with open(songs_file, "w") as f:
         f.write("\n".join(normalized) + "\n")
 
     print("[+] 已保存 {} 首歌曲到 songs.txt".format(len(normalized)))
-
-    # 询问歌单名称
-    print()
-    default_name = sys.argv[1] if len(sys.argv) >= 2 else "我的歌单"
-    name = input("请输入歌单名称（默认: {}）: ".format(default_name)).strip()
-    if not name:
-        name = default_name
-    return name
+    return True
 
 
-def _parse_song(line):
-    """解析单行歌曲，返回 (歌名, 歌手) 或 None"""
+def _fix_surrogates(s):
+    try:
+        s.encode("utf-8")   # 没有 surrogate，直接返回
+        return s
+    except UnicodeEncodeError:
+        try:
+            # 有 surrogate，还原字节后解码，去掉无法还原的替换符
+            return s.encode("utf-8", "surrogatepass").decode("utf-8", "replace").replace("�", "")
+        except Exception:
+            return s
+
+
+def _parse_songs(line):
+    """解析单行歌曲，返回 [(歌名, 歌手), ...] 列表"""
     line = line.strip()
     if not line:
-        return None
+        return []
     line = line.lstrip("·•●○◆◇※☆★♪♫♬▷▶ ")
 
-    # 歌手《歌名》
-    m = re.search(r"《([^》]+)》\s*(?:[-—–]+)?\s*$", line)
-    if m:
-        song = m.group(1).strip()
-        artist = line[: m.start()].strip().rstrip("·•●○◆◇※☆★♪♫♬▷▶ ")
-        if artist:
-            return (song, artist)
+    # 歌手：《歌名1》《歌名2》... 或 歌手《歌名1》《歌名2》...
+    titles = re.findall(r"《([^》]+)》", line)
+    if titles:
+        artist = line[: line.index("《")].strip().rstrip("：: ·•●○◆◇※☆★♪♫♬▷▶ ")
+        return [(t, artist) for t in titles]
 
     # 歌名 - 歌手
     m = re.match(r"^(.+?)\s*[-—–]\s*(.+)$", line)
     if m:
-        return (m.group(1).strip(), m.group(2).strip())
+        return [(m.group(1).strip(), m.group(2).strip())]
 
     # 歌名  歌手（多空格）
     m = re.match(r"^(.+?)\s{3,}(.+)$", line)
     if m:
-        return (m.group(1).strip(), m.group(2).strip())
+        return [(m.group(1).strip(), m.group(2).strip())]
 
-    # 只有歌名，无歌手
-    return (line, "")
+    return [(line, "")]
 
 
 def warmup():
@@ -302,6 +329,21 @@ def warmup():
         pass
 
 
+def logout():
+    try:
+        conn = http.client.HTTPConnection("localhost", API_PORT, timeout=10)
+        with open(COOKIE_FILE) as f:
+            cookie = f.read().strip()
+        conn.request("GET", "/logout", headers={"Cookie": cookie})
+        conn.getresponse().read()
+        conn.close()
+    except Exception:
+        pass
+    if os.path.exists(COOKIE_FILE):
+        os.remove(COOKIE_FILE)
+    print("[✓] 已退出登录，Cookie 已清除")
+
+
 def main():
     if not start_api():
         sys.exit(1)
@@ -312,17 +354,26 @@ def main():
         print("\n[!] 登录失败")
         sys.exit(1)
 
-    playlist_name = get_songs()
-    if not playlist_name:
+    if not get_songs():
         print("\n[!] 歌曲清单为空")
         sys.exit(1)
 
-    if not run_import(playlist_name):
+    if not run_import():
         print("\n[!] 导入失败")
         sys.exit(1)
 
     print("\n[✓] 全部完成！")
 
+    print()
+    choice = input("是否退出网易云账号？(y/N): ").strip().lower()
+    if choice == "y":
+        logout()
+    else:
+        print("[i] 登录状态已保留，下次运行无需重新登录")
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n[!] 已退出")

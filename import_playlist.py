@@ -83,6 +83,7 @@ def api_get(path, params_dict=None, retries=3, timeout=90):
 
     cookie = load_cookie()
 
+    last_info = ""
     for attempt in range(retries):
         try:
             conn = http.client.HTTPConnection(API_HOST, API_PORT, timeout=timeout)
@@ -91,20 +92,23 @@ def api_get(path, params_dict=None, retries=3, timeout=90):
                 headers["Cookie"] = cookie
             conn.request("GET", url, headers=headers)
             r = conn.getresponse()
-            data = json.loads(r.read().decode("utf-8"))
+            raw = r.read()
+            data = json.loads(raw.decode("utf-8"))
             conn.close()
 
             code = data.get("code")
             if code == 200:
                 return data
-            msg = data.get("msg", "")
+            msg = data.get("msg", "") or data.get("message", "")
+            last_info = f"code={code} msg={msg}"
             if "需要登录" in msg:
-                print(f"  [!] 需要登录，跳过")
+                print(f"  [!] 需要登录，请重新登录")
                 return None
-        except Exception:
-            pass
+        except Exception as e:
+            last_info = str(e)
         if attempt < retries - 1:
             time.sleep(2 ** attempt)
+    print(f"    [!] 请求失败: {last_info}")
     return None
 
 
@@ -213,13 +217,25 @@ def warmup():
         print(f"   (耗时 {elapsed:.0f}s)")
 
 
+def _fix_surrogates(s):
+    try:
+        s.encode("utf-8")
+        return s
+    except UnicodeEncodeError:
+        try:
+            return s.encode("utf-8", "surrogatepass").decode("utf-8", "replace").replace("�", "")
+        except Exception:
+            return s
+
+
+def ask_playlist_name():
+    """搜索完成后询问歌单名称"""
+    print()
+    name = input("请输入歌单名称（默认: 我的歌单）: ").strip()
+    return _fix_surrogates(name) or "我的歌单"
+
+
 def main():
-    if len(sys.argv) < 2:
-        print(f"用法: python {os.path.basename(__file__)} \"歌单名称\"")
-        sys.exit(1)
-
-    playlist_name = sys.argv[1]
-
     if not os.path.exists(SONGS_FILE):
         print(f"[-] 未找到 {SONGS_FILE}")
         sys.exit(1)
@@ -258,46 +274,59 @@ def main():
 
     warmup()
 
-    print("\n[*] 开始搜索匹配歌曲...")
+    print("\n[*] 开始搜索匹配歌曲...（按 Ctrl+C 可随时停止）")
     matched_ids = []
     low_confidence = []
     unmatched = []
     success = []
+    idx = 0
 
-    for idx, (song_name, artist_name) in enumerate(songs, 1):
-        print(f"  [{idx}/{len(songs)}] {song_name} - {artist_name}")
-        result = search_song(song_name, artist_name)
-        if result is None:
-            label = artist_name or song_name
-            unmatched.append(f"{label}")
-            print(f"    -> 未找到")
-        else:
-            s = result["song"]
-            sid = s.get("id")
-            sname = s.get("name", "?")
-            sar = ", ".join(ar.get("name", "") for ar in s.get("ar", []))
-            matched_ids.append(sid)
-            success.append(f"{sname} - {sar} - {sid}")
-            conf = result["confidence"]
-            if conf == "high":
-                print(f"    -> ✓ {sname} - {sar}")
-            elif conf == "no_artist":
-                low_confidence.append(
-                    f"{song_name} (未指定歌手) -> 自动匹配: {sname} - {sar} - {sid}"
-                )
-                print(f"    -> ? {sname} - {sar} (自动匹配)")
+    try:
+        for idx, (song_name, artist_name) in enumerate(songs, 1):
+            print(f"  [{idx}/{len(songs)}] {song_name} - {artist_name}")
+            result = search_song(song_name, artist_name)
+            if result is None:
+                label = artist_name or song_name
+                unmatched.append(f"{label}")
+                print(f"    -> 未找到")
             else:
-                low_confidence.append(
-                    f"{song_name} - {artist_name} -> 匹配: {sname} - {sar} - {sid}"
-                )
-                print(f"    -> ? {sname} - {sar} (歌手不匹配)")
-        time.sleep(0.5)
+                s = result["song"]
+                sid = s.get("id")
+                sname = s.get("name", "?")
+                sar = ", ".join(ar.get("name", "") for ar in s.get("ar", []))
+                matched_ids.append(sid)
+                success.append(f"{sname} - {sar} - {sid}")
+                conf = result["confidence"]
+                if conf == "high":
+                    print(f"    -> ✓ {sname} - {sar}")
+                elif conf == "no_artist":
+                    low_confidence.append(
+                        f"{song_name} (未指定歌手) -> 自动匹配: {sname} - {sar} - {sid}"
+                    )
+                    print(f"    -> ? {sname} - {sar} (自动匹配)")
+                else:
+                    low_confidence.append(
+                        f"{song_name} - {artist_name} -> 匹配: {sname} - {sar} - {sid}"
+                    )
+                    print(f"    -> ? {sname} - {sar} (歌手不匹配)")
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(f"\n\n[!] 已中断，已搜索 {idx}/{len(songs)} 首，匹配到 {len(matched_ids)} 首")
+        if not matched_ids:
+            print("[-] 没有已匹配的歌曲，退出")
+            sys.exit(0)
+        ans = input("是否用已匹配的歌曲创建歌单？(Y/n): ").strip().lower()
+        if ans == "n":
+            print("[-] 已取消")
+            sys.exit(0)
+
+    playlist_name = ask_playlist_name()
 
     print(f"\n[*] 创建歌单「{playlist_name}」...")
     playlist_id = create_playlist(playlist_name)
     if not playlist_id:
-        print("[-] 创建歌单失败（可能需要重新登录）")
-        sys.exit(1)
+        print("[-] 创建歌单失败，登录已过期")
+        sys.exit(2)  # 退出码 2 = 需要重新登录
     print(f"[+] 歌单创建成功: {playlist_id}")
 
     print(f"[*] 添加 {len(matched_ids)} 首歌曲到歌单...")
