@@ -9,4 +9,5 @@ bin
 anonymous_token
 .vercel
 .env
-IFLOW.md
+IFLOW.mdnode_modules/
+pnpm-lock.yaml
