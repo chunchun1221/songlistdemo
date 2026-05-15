@@ -191,6 +191,58 @@ def run_import():
     return result.returncode == 0
 
 
+def get_songs():
+    """获取歌曲清单"""
+    songs_file = os.path.join(BASE_DIR, "songs.txt")
+    has_file = os.path.exists(songs_file)
+
+    print()
+    print("=" * 50)
+    print("歌曲清单")
+    print("=" * 50)
+    print()
+
+    if has_file:
+        with open(songs_file) as f:
+            count = sum(1 for line in f if line.strip())
+        print("  检测到 songs.txt（{} 首）".format(count))
+        use_file = input("\n直接使用此文件？(Y/n): ").strip().lower()
+        if use_file != "n":
+            return True
+
+    print("请粘贴歌曲清单（每行格式：歌名 - 歌手）")
+    print("粘贴完成后，按 Ctrl+D（Mac）/ Ctrl+Z（Windows）结束")
+    print("或者将 songs.txt 文件拖拽到终端")
+    print()
+
+    lines = []
+    try:
+        while True:
+            line = input()
+            lines.append(line)
+    except EOFError:
+        pass
+
+    content = "\n".join(lines).strip()
+    if not content:
+        print("[-] 未输入任何歌曲")
+        return False
+
+    # 如果用户拖拽了文件路径，读取文件内容
+    if len(lines) == 1 and os.path.exists(lines[0].strip().replace("\\ ", " ")):
+        filepath = lines[0].strip().replace("\\ ", " ")
+        with open(filepath) as f:
+            content = f.read().strip()
+
+    # 保存到 songs.txt
+    with open(songs_file, "w") as f:
+        f.write(content + "\n")
+
+    count = len([l for l in content.split("\n") if l.strip()])
+    print("[+] 已保存 {} 首歌曲到 songs.txt".format(count))
+    return True
+
+
 def warmup():
     print("[*] 预热连接（首次约 30-60s）...")
     try:
@@ -213,6 +265,10 @@ def main():
 
     if not ensure_login():
         print("\n[!] 登录失败")
+        sys.exit(1)
+
+    if not get_songs():
+        print("\n[!] 歌曲清单为空")
         sys.exit(1)
 
     if not run_import():
