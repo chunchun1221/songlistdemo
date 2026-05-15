@@ -1,39 +1,47 @@
 #!/usr/bin/env python3
 """网易云音乐扫码登录 - 持久化 cookie 到 .cookie 文件"""
 
+import http.client
+import json
 import os
 import sys
 import time
 
-import requests
-
-API_BASE = "http://localhost:3000"
+API_BASE = "localhost"
+API_PORT = 3000
 COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cookie")
-COMMON_PARAMS = {
-    "realIP": "183.2.175.120",
-    "domain": "https://music.163.com",
-}
+REAL_IP = "183.2.175.120"
 
 
-def api_get(path, params=None, retries=5):
-    if params is None:
-        params = {}
-    params.update(COMMON_PARAMS)
+def api_get(path, params_str="", retries=10):
+    """使用 http.client 发 GET 请求，更稳定"""
+    url = path
+    if params_str:
+        url = path + "?" + params_str
+
     for attempt in range(retries):
         try:
-            r = requests.get(
-                f"{API_BASE}{path}", params=params, timeout=30
-            )
-            data = r.json()
+            conn = http.client.HTTPConnection(API_BASE, API_PORT, timeout=60)
+            conn.request("GET", url)
+            r = conn.getresponse()
+            data = json.loads(r.read().decode("utf-8"))
+            conn.close()
             if data.get("code") == 200:
                 return data
+            if data.get("code") == 800:
+                return data
+            if data.get("code") == 802:
+                return data
+            if data.get("code") == 803:
+                return data
+            # 502 或其他错误 => 重试
         except Exception:
             pass
         if attempt < retries - 1:
             sys.stdout.write(f"\r  [重试 {attempt+1}/{retries}]")
             sys.stdout.flush()
-            time.sleep(2)
-    raise RuntimeError(f"API {path} 请求失败 ({retries} 次)")
+            time.sleep(3)
+    raise RuntimeError(f"请求 {path} 失败 ({retries} 次后放弃)")
 
 
 def main():
@@ -41,18 +49,41 @@ def main():
     print("网易云音乐 - 扫码登录")
     print("=" * 50)
 
-    # 1. 获取二维码 key
-    print("\n[*] 获取二维码 key...")
-    resp = api_get("/login/qr/key")
+    # 预热 search
+    print("\n[*] 预热连接...")
+    try:
+        conn = http.client.HTTPConnection(API_BASE, API_PORT, timeout=60)
+        conn.request(
+            "GET",
+            "/search?keywords=warmup&realIP={}&domain=https://music.163.com".format(
+                REAL_IP
+            ),
+        )
+        conn.getresponse().read()
+        conn.close()
+    except Exception:
+        pass
+
+    # 1. 获取 key
+    print("[*] 获取二维码 key...")
+    resp = api_get(
+        "/login/qr/key",
+        "realIP={}&domain=https://music.163.com".format(REAL_IP),
+    )
     key = resp.get("data", {}).get("unikey")
-    print(f"\n[*] key: {key}")
+    print(f"[*] key: {key}")
 
     # 2. 创建二维码
     print("[*] 生成二维码...")
-    resp = api_get("/login/qr/create", {"key": key})
+    resp = api_get(
+        "/login/qr/create",
+        "key={}&realIP={}&domain=https://music.163.com".format(key, REAL_IP),
+    )
     qr_url = resp.get("data", {}).get("url")
+    if not qr_url:
+        qr_url = "https://music.163.com/login?codekey={}".format(key)
 
-    # 3. 打印 ASCII 二维码
+    # 3. 打印二维码
     import qrcode
 
     qr = qrcode.QRCode()
@@ -61,24 +92,28 @@ def main():
     qr.print_ascii()
 
     print("\n[*] 请用网易云音乐 App 扫码登录")
-    print("[*] 二维码有效期约 3 分钟")
+    print("[*] 二维码有效期约 3 分钟\n")
 
-    # 4. 轮询扫码状态
+    # 4. 轮询
     for i in range(60):
-        resp = api_get("/login/qr/check", {"key": key}, retries=3)
+        resp = api_get(
+            "/login/qr/check",
+            "key={}&realIP={}".format(key, REAL_IP),
+            retries=5,
+        )
         code = resp.get("code", -1)
         if code == 800:
-            print("\n[!] 二维码已过期，请重新运行本脚本")
+            print("\n[!] 二维码已过期，请重新运行")
             sys.exit(1)
         if code == 803:
             cookie_str = resp.get("cookie", "")
             if not cookie_str:
-                print(f"\n[-] 扫码成功但 cookie 为空: {resp}", file=sys.stderr)
+                print(f"\n[-] 扫码成功但 cookie 为空", file=sys.stderr)
                 sys.exit(1)
             with open(COOKIE_FILE, "w") as f:
                 f.write(cookie_str)
             os.chmod(COOKIE_FILE, 0o600)
-            print(f"\n[+] 登录成功！Cookie 已保存到 {COOKIE_FILE}")
+            print(f"\n[+] 登录成功！Cookie 已保存")
             return
         sys.stdout.write(f"\r[*] 等待扫码{'.' * ((i + 1) % 4):<4}")
         sys.stdout.flush()
